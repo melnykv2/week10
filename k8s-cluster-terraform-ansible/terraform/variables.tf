@@ -70,8 +70,13 @@ variable "ssh_private_key_path" {
   default     = "~/.ssh/id_ed25519"
 }
 
-variable "admin_cidr" {
-  description = "CIDR allowed to reach SSH (22) and the Kubernetes API (6443). Restrict to your own IP, e.g. 1.2.3.4/32"
-  type        = string
-  default     = "0.0.0.0/0"
+variable "admin_cidrs" {
+  description = "CIDRs allowed to reach SSH (22), the Kubernetes API (6443), NodePorts (30000-32767) and ICMP. Open to everyone by default; narrow it, e.g. [\"1.2.3.4/32\"], to restrict access"
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+
+  validation {
+    condition     = length(var.admin_cidrs) > 0 && alltrue([for c in var.admin_cidrs : can(cidrhost(c, 0))])
+    error_message = "admin_cidrs must contain at least one valid IPv4 CIDR, e.g. \"1.2.3.4/32\"."
+  }
 }
