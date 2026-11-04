@@ -1,5 +1,4 @@
 ---
-# Step 4: Bootstrap the etcd cluster (one member per controller, mutual TLS everywhere).
 
 - name: Download etcd release
   ansible.builtin.get_url:
@@ -8,7 +7,7 @@
     mode: "0644"
 
 - name: Install etcd and etcdctl binaries
-  ansible.builtin.command:  # noqa: command-instead-of-module - extracts only two members, flattened
+  ansible.builtin.command:
     cmd: >-
       tar -xzf /tmp/etcd-{{ etcd_version }}.tar.gz -C /usr/local/bin --strip-components=1
       etcd-{{ etcd_version }}-linux-{{ arch }}/etcd
