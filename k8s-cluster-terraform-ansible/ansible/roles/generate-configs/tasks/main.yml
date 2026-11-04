@@ -1,9 +1,4 @@
 ---
-# Step 2: Kubernetes configuration files (kubeconfigs) for authentication.
-# Step 3: Data encryption config and key.
-# Runs on the Ansible control machine. Each kubeconfig embeds the CA plus the client
-# cert/key, the same result as `kubectl config set-cluster/set-credentials --embed-certs`.
-
 - name: Create kubeconfig directory
   ansible.builtin.file:
     path: "{{ kubeconfig_dir }}"
@@ -18,7 +13,6 @@
       - {name: kube-scheduler, user: "system:kube-scheduler", cert: kube-scheduler, server: "https://127.0.0.1:6443"}
       - {name: admin, user: admin, cert: admin, server: "https://127.0.0.1:6443"}
 
-# Kubelets authenticate as system:node:<name> and talk to the API over the private network
 - name: Add one kubeconfig per worker (kubelet)
   ansible.builtin.set_fact:
     kubeconfigs: >-
@@ -35,8 +29,6 @@
   loop_control:
     label: "{{ item.name }} -> {{ item.server }}"
 
-# 32 random bytes, persisted locally so re-runs keep the same key
-# (changing it would make existing secrets in etcd unreadable).
 - name: Generate (or read existing) data encryption key
   ansible.builtin.set_fact:
     encryption_key: "{{ lookup('ansible.builtin.password', pki_dir ~ '/encryption.key', chars=['ascii_letters', 'digits'], length=32) }}"
