@@ -1,0 +1,2 @@
+---
+remote_kubeconfig: "{{ artifacts_dir }}/admin-remote.kubeconfig"

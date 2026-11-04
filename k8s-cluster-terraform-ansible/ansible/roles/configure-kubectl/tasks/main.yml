@@ -1,0 +1,44 @@
+---
+# Step 7: Configure kubectl on the Ansible control machine for remote access
+# through the controller's public (Elastic) IP. The user's ~/.kube/config is left untouched.
+
+- name: Generate admin kubeconfig for remote access
+  ansible.builtin.template:
+    src: "{{ role_path }}/../generate-configs/templates/kubeconfig.j2"
+    dest: "{{ remote_kubeconfig }}"
+    mode: "0600"
+  vars:
+    item:
+      user: admin
+      cert: admin
+      server: "https://{{ api_server_public_ip }}:6443"
+
+- name: Check whether kubectl is installed locally
+  ansible.builtin.command: kubectl version --client
+  register: local_kubectl
+  failed_when: false
+  changed_when: false
+
+- name: Verify remote access
+  when: local_kubectl.rc == 0
+  block:
+    - name: Query server version through the public endpoint
+      ansible.builtin.command: kubectl --kubeconfig {{ remote_kubeconfig }} version
+      register: remote_version
+      changed_when: false
+
+    - name: List nodes through the public endpoint
+      ansible.builtin.command: kubectl --kubeconfig {{ remote_kubeconfig }} get nodes -o wide
+      register: remote_nodes
+      until: remote_nodes.rc == 0
+      retries: 5
+      delay: 5
+      changed_when: false
+
+    - name: Show remote kubectl output
+      ansible.builtin.debug:
+        msg: "{{ remote_version.stdout_lines + [''] + remote_nodes.stdout_lines }}"
+
+- name: How to use the remote kubeconfig
+  ansible.builtin.debug:
+    msg: "export KUBECONFIG={{ remote_kubeconfig }} && kubectl get nodes"
