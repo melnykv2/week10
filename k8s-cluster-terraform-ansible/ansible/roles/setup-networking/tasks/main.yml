@@ -1,0 +1,37 @@
+---
+# Step 8: Pod network routes.
+# Each worker owns one /24 of the pod CIDR, served by the CNI bridge plugin.
+# Cross-node pod traffic is routed (no overlay):
+#   * AWS level - Terraform adds VPC routes 10.200.N.0/24 -> worker-N ENI and
+#     disables source/destination checks on the workers.
+#   * OS level  - each worker gets a kernel route to every other worker's pod CIDR.
+
+- name: Add routes to the pod CIDRs of the other workers
+  ansible.builtin.command:
+    cmd: ip route replace {{ hostvars[item]['pod_cidr'] }} via {{ hostvars[item]['private_ip'] }}
+  loop: "{{ groups['workers'] | difference([inventory_hostname]) }}"
+  changed_when: false
+
+- name: Persist pod routes across reboots (netplan)
+  ansible.builtin.template:
+    src: 60-pod-routes.yaml.j2
+    dest: /etc/netplan/60-pod-routes.yaml
+    mode: "0600"
+  when: groups['workers'] | length > 1
+
+- name: Read the routing table
+  ansible.builtin.command: ip route
+  register: ip_routes
+  changed_when: false
+
+- name: Verify every remote pod CIDR is routed
+  ansible.builtin.assert:
+    that: >-
+      ip_routes.stdout is search(hostvars[item]['pod_cidr'] ~ ' via ' ~ hostvars[item]['private_ip'])
+    fail_msg: "Missing route to {{ hostvars[item]['pod_cidr'] }} on {{ inventory_hostname }}"
+    quiet: true
+  loop: "{{ groups['workers'] | difference([inventory_hostname]) }}"
+
+- name: Show node pod CIDRs
+  ansible.builtin.debug:
+    msg: "{{ inventory_hostname }} ({{ private_ip }}) -> pods {{ pod_cidr }}"

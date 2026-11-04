@@ -1,0 +1,10 @@
+# Managed by Ansible: routes to the pod CIDRs of the other workers
+network:
+  version: 2
+  ethernets:
+    {{ ansible_facts['default_ipv4']['interface'] }}:
+      routes:
+{% for host in groups['workers'] | difference([inventory_hostname]) %}
+        - to: {{ hostvars[host]['pod_cidr'] }}
+          via: {{ hostvars[host]['private_ip'] }}
+{% endfor %}
