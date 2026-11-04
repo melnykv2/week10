@@ -1,0 +1,72 @@
+---
+# Step 4: Bootstrap the etcd cluster (one member per controller, mutual TLS everywhere).
+
+- name: Download etcd release
+  ansible.builtin.get_url:
+    url: "https://github.com/etcd-io/etcd/releases/download/{{ etcd_version }}/etcd-{{ etcd_version }}-linux-{{ arch }}.tar.gz"
+    dest: "/tmp/etcd-{{ etcd_version }}.tar.gz"
+    mode: "0644"
+
+- name: Install etcd and etcdctl binaries
+  ansible.builtin.command:  # noqa: command-instead-of-module - extracts only two members, flattened
+    cmd: >-
+      tar -xzf /tmp/etcd-{{ etcd_version }}.tar.gz -C /usr/local/bin --strip-components=1
+      etcd-{{ etcd_version }}-linux-{{ arch }}/etcd
+      etcd-{{ etcd_version }}-linux-{{ arch }}/etcdctl
+    creates: /usr/local/bin/etcd
+
+- name: Create etcd directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: /etc/etcd, mode: "0755"}
+    - {path: /var/lib/etcd, mode: "0700"}
+
+- name: Copy CA and API server certificates for etcd
+  ansible.builtin.copy:
+    src: "{{ pki_dir }}/{{ item }}"
+    dest: "/etc/etcd/{{ item }}"
+    mode: "{{ '0600' if item.endswith('.key') else '0644' }}"
+  loop:
+    - ca.crt
+    - kube-api-server.crt
+    - kube-api-server.key
+  notify: Restart etcd
+
+- name: Install etcd systemd unit
+  ansible.builtin.template:
+    src: etcd.service.j2
+    dest: /etc/systemd/system/etcd.service
+    mode: "0644"
+  notify: Restart etcd
+
+- name: Start and enable etcd
+  ansible.builtin.systemd_service:
+    name: etcd
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Apply pending etcd restarts
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait until all etcd members are listed and healthy
+  ansible.builtin.command:
+    cmd: >-
+      etcdctl member list -w table
+      --endpoints=https://127.0.0.1:2379
+      --cacert=/etc/etcd/ca.crt
+      --cert=/etc/etcd/kube-api-server.crt
+      --key=/etc/etcd/kube-api-server.key
+  register: etcd_members
+  until: etcd_members.rc == 0 and (etcd_members.stdout | regex_findall('started') | length) == (groups['controllers'] | length)
+  retries: 20
+  delay: 5
+  changed_when: false
+
+- name: Show etcd members
+  ansible.builtin.debug:
+    var: etcd_members.stdout_lines
+  run_once: true
