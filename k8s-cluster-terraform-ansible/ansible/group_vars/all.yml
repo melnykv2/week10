@@ -1,0 +1,26 @@
+---
+kubernetes_version: v1.34.13
+etcd_version: v3.6.8
+containerd_version: 2.1.6
+runc_version: v1.3.4
+cni_plugins_version: v1.8.0
+crictl_version: v1.34.0
+coredns_image: registry.k8s.io/coredns/coredns:v1.12.1
+
+arch: amd64
+
+cluster_name: kubernetes-the-hard-way
+cluster_domain: cluster.local
+service_cluster_ip_range: 10.32.0.0/24
+kubernetes_service_ip: 10.32.0.1   # first IP of the service range
+cluster_dns_ip: 10.32.0.10
+
+api_server_private_ip: "{{ hostvars[groups['controllers'][0]]['private_ip'] }}"
+api_server_public_ip: "{{ hostvars[groups['controllers'][0]]['ansible_host'] }}"
+
+artifacts_dir: "{{ playbook_dir }}/artifacts"
+pki_dir: "{{ artifacts_dir }}/pki"
+kubeconfig_dir: "{{ artifacts_dir }}/kubeconfigs"
+
+admin_kubeconfig_remote: /etc/kubernetes/admin.kubeconfig
+kubectl_remote: "kubectl --kubeconfig {{ admin_kubeconfig_remote }}"
