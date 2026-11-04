@@ -1,0 +1,29 @@
+---
+# Step 9: Deploy the DNS cluster add-on (CoreDNS behind the kube-dns service, cluster_dns_ip).
+
+- name: Render CoreDNS manifest
+  ansible.builtin.template:
+    src: coredns.yaml.j2
+    dest: /etc/kubernetes/config/coredns.yaml
+    mode: "0644"
+
+- name: Apply CoreDNS manifest
+  ansible.builtin.command:
+    cmd: "{{ kubectl_remote }} apply -f /etc/kubernetes/config/coredns.yaml"
+  register: coredns_apply
+  changed_when: "'created' in coredns_apply.stdout or 'configured' in coredns_apply.stdout"
+
+- name: Wait for the CoreDNS rollout to finish
+  ansible.builtin.command:
+    cmd: "{{ kubectl_remote }} -n kube-system rollout status deployment/coredns --timeout=300s"
+  changed_when: false
+
+- name: List CoreDNS pods
+  ansible.builtin.command:
+    cmd: "{{ kubectl_remote }} -n kube-system get pods -l k8s-app=kube-dns -o wide"
+  register: coredns_pods
+  changed_when: false
+
+- name: Show CoreDNS pods
+  ansible.builtin.debug:
+    var: coredns_pods.stdout_lines
