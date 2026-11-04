@@ -1,7 +1,4 @@
 ---
-# Step 7: Configure kubectl on the Ansible control machine for remote access
-# through the controller's public (Elastic) IP. The user's ~/.kube/config is left untouched.
-
 - name: Generate admin kubeconfig for remote access
   ansible.builtin.template:
     src: "{{ role_path }}/../generate-configs/templates/kubeconfig.j2"
