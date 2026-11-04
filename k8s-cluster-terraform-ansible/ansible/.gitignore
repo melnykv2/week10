@@ -1,0 +1,4 @@
+# Generated certificates, keys and kubeconfigs - never commit
+artifacts/
+inventory.ini
+*.retry
