@@ -50,7 +50,6 @@
     label: "{{ item.name }}"
   register: cert_confs
 
-# If a config changed (e.g. new public IP after re-provisioning) the cert must be re-issued.
 - name: Remove certificates whose config changed
   ansible.builtin.file:
     path: "{{ pki_dir }}/{{ item.item.name }}.crt"
@@ -58,7 +57,7 @@
   loop: "{{ cert_confs.results }}"
   loop_control:
     label: "{{ item.item.name }}"
-  when: item.changed  # noqa: no-handler - must run before the signing task below
+  when: item.changed
 
 - name: Generate private keys
   ansible.builtin.command:
