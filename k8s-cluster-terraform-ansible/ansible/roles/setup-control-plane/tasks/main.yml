@@ -1,0 +1,131 @@
+---
+# Step 5: Bootstrap the Kubernetes control plane
+# (kube-apiserver, kube-controller-manager, kube-scheduler as systemd services).
+
+- name: Create Kubernetes config directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /etc/kubernetes/config
+    - /var/lib/kubernetes
+
+- name: Download control plane binaries and kubectl
+  ansible.builtin.get_url:
+    url: "https://dl.k8s.io/{{ kubernetes_version }}/bin/linux/{{ arch }}/{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
+    mode: "0755"
+  loop:
+    - kube-apiserver
+    - kube-controller-manager
+    - kube-scheduler
+    - kubectl
+  notify:
+    - Restart kube-apiserver
+    - Restart kube-controller-manager
+    - Restart kube-scheduler
+
+- name: Copy certificates, keys and encryption config
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/var/lib/kubernetes/{{ item | basename }}"
+    mode: "{{ '0644' if item.endswith('.crt') else '0600' }}"
+  loop:
+    - "{{ pki_dir }}/ca.crt"
+    - "{{ pki_dir }}/ca.key"
+    - "{{ pki_dir }}/kube-api-server.crt"
+    - "{{ pki_dir }}/kube-api-server.key"
+    - "{{ pki_dir }}/service-accounts.crt"
+    - "{{ pki_dir }}/service-accounts.key"
+    - "{{ artifacts_dir }}/encryption-config.yaml"
+  notify:
+    - Restart kube-apiserver
+    - Restart kube-controller-manager
+
+- name: Copy controller-manager and scheduler kubeconfigs
+  ansible.builtin.copy:
+    src: "{{ kubeconfig_dir }}/{{ item }}.kubeconfig"
+    dest: "/var/lib/kubernetes/{{ item }}.kubeconfig"
+    mode: "0600"
+  loop:
+    - kube-controller-manager
+    - kube-scheduler
+  notify:
+    - Restart kube-controller-manager
+    - Restart kube-scheduler
+
+- name: Copy admin kubeconfig (used by kubectl on the controller)
+  ansible.builtin.copy:
+    src: "{{ kubeconfig_dir }}/admin.kubeconfig"
+    dest: "{{ admin_kubeconfig_remote }}"
+    mode: "0600"
+
+- name: Install kube-scheduler configuration
+  ansible.builtin.template:
+    src: kube-scheduler.yaml.j2
+    dest: /etc/kubernetes/config/kube-scheduler.yaml
+    mode: "0644"
+  notify: Restart kube-scheduler
+
+- name: Install systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.service.j2"
+    dest: "/etc/systemd/system/{{ item }}.service"
+    mode: "0644"
+  loop:
+    - kube-apiserver
+    - kube-controller-manager
+    - kube-scheduler
+  notify:
+    - Restart kube-apiserver
+    - Restart kube-controller-manager
+    - Restart kube-scheduler
+
+- name: Start and enable control plane services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+    daemon_reload: true
+  loop:
+    - kube-apiserver
+    - kube-controller-manager
+    - kube-scheduler
+
+- name: Apply pending control plane restarts
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the API server to become ready
+  ansible.builtin.command:
+    cmd: "{{ kubectl_remote }} get --raw=/readyz"
+  register: apiserver_ready
+  until: apiserver_ready.rc == 0 and apiserver_ready.stdout == 'ok'
+  retries: 30
+  delay: 5
+  changed_when: false
+
+- name: Render RBAC for API server -> kubelet access
+  ansible.builtin.template:
+    src: kube-apiserver-to-kubelet.yaml.j2
+    dest: /etc/kubernetes/config/kube-apiserver-to-kubelet.yaml
+    mode: "0644"
+  run_once: true
+
+- name: Apply RBAC for API server -> kubelet access
+  ansible.builtin.command:
+    cmd: "{{ kubectl_remote }} apply -f /etc/kubernetes/config/kube-apiserver-to-kubelet.yaml"
+  register: rbac_apply
+  changed_when: "'created' in rbac_apply.stdout or 'configured' in rbac_apply.stdout"
+  run_once: true
+
+- name: Verify the API server answers on its HTTPS endpoint with the cluster CA
+  ansible.builtin.uri:
+    url: "https://{{ private_ip }}:6443/version"
+    ca_path: /var/lib/kubernetes/ca.crt
+    return_content: true
+  register: apiserver_version
+
+- name: Show Kubernetes version reported by the API server
+  ansible.builtin.debug:
+    msg: "{{ inventory_hostname }}: {{ apiserver_version.json.gitVersion }}"
