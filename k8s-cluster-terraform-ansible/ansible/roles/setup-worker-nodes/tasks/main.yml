@@ -1,6 +1,4 @@
 ---
-# Step 6: Bootstrap the worker nodes (containerd + runc, CNI plugins, kubelet, kube-proxy).
-
 - name: Install OS dependencies
   ansible.builtin.apt:
     name: [socat, conntrack, ipset, iptables, kmod]
@@ -44,7 +42,7 @@
 
 - name: Apply sysctl settings
   ansible.builtin.command: sysctl --system
-  when: k8s_sysctl.changed  # noqa: no-handler - must apply before kubelet starts below
+  when: k8s_sysctl.changed
   changed_when: true
 
 - name: Create worker directories
@@ -100,7 +98,7 @@
     gh: https://github.com
 
 - name: Extract containerd (bin/* -> /usr/local/bin)
-  ansible.builtin.command:  # noqa: command-instead-of-module - plain tar + creates is simpler than unarchive here
+  ansible.builtin.command:
     cmd: tar -xzf /tmp/containerd-{{ containerd_version }}.tar.gz -C /usr/local
     creates: /usr/local/bin/containerd
   notify: Restart containerd

@@ -16,8 +16,6 @@ clusterDomain: "{{ cluster_domain }}"
 clusterDNS:
   - "{{ cluster_dns_ip }}"
 podCIDR: "{{ pod_cidr }}"
-# The real upstream resolvers; /etc/resolv.conf points at the systemd-resolved stub
-# 127.0.0.53, which would make CoreDNS forward queries to itself (loop).
 resolvConf: "/run/systemd/resolve/resolv.conf"
 runtimeRequestTimeout: "15m"
 tlsCertFile: "/var/lib/kubelet/kubelet.crt"
