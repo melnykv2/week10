@@ -1,0 +1,208 @@
+---
+# Step 10: Smoke test - encryption at rest, deployments, DNS, port-forward, logs,
+# exec, services and cross-node pod networking. Runs on the first controller.
+
+# --- 1. Data encryption at rest -------------------------------------------------
+
+- name: Create a generic secret
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      {{ kubectl_remote }} -n {{ smoke_namespace }} create secret generic {{ smoke_secret_name }}
+      --from-literal=mykey=mydata --dry-run=client -o yaml
+      | {{ kubectl_remote }} apply -f -
+    executable: /bin/bash
+  changed_when: false
+
+- name: Read the raw secret straight from etcd
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      etcdctl get /registry/secrets/{{ smoke_namespace }}/{{ smoke_secret_name }}
+      --endpoints=https://127.0.0.1:2379
+      --cacert=/etc/etcd/ca.crt
+      --cert=/etc/etcd/kube-api-server.crt
+      --key=/etc/etcd/kube-api-server.key
+      | grep -a -o -e 'k8s:enc:aescbc:v1:key1' -e 'mydata' | sort -u
+    executable: /bin/bash
+  register: etcd_secret
+  changed_when: false
+
+- name: Assert the secret is stored encrypted (aescbc, key1) and not in plain text
+  ansible.builtin.assert:
+    that:
+      - "'k8s:enc:aescbc:v1:key1' in etcd_secret.stdout_lines"
+      - "'mydata' not in etcd_secret.stdout_lines"
+    success_msg: "Secret is encrypted at rest with aescbc/key1"
+
+# --- 2. Deployments -------------------------------------------------------------
+
+- name: Create an nginx deployment
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      {{ kubectl_remote }} -n {{ smoke_namespace }} create deployment nginx --image={{ smoke_nginx_image }}
+      --replicas={{ groups['workers'] | length }} --dry-run=client -o yaml
+      | {{ kubectl_remote }} apply -f -
+    executable: /bin/bash
+  changed_when: false
+
+- name: Wait for the nginx deployment to be available
+  ansible.builtin.command:
+    cmd: "{{ kubectl_remote }} -n {{ smoke_namespace }} rollout status deployment/nginx --timeout=300s"
+  changed_when: false
+
+- name: Get nginx pods
+  ansible.builtin.command:
+    cmd: "{{ kubectl_remote }} -n {{ smoke_namespace }} get pods -l app=nginx -o json"
+  register: nginx_pods_raw
+  changed_when: false
+
+- name: Extract nginx pod names and IPs
+  ansible.builtin.set_fact:
+    nginx_pods: >-
+      {{ (nginx_pods_raw.stdout | from_json)['items']
+         | map(attribute='status')
+         | map(attribute='podIP') | list }}
+    nginx_pod_names: >-
+      {{ (nginx_pods_raw.stdout | from_json)['items']
+         | map(attribute='metadata') | map(attribute='name') | list }}
+
+# --- 3. Pod networking (controller -> pod IPs on every worker via VPC routes) ---
+
+- name: Reach every nginx pod directly by its pod IP
+  ansible.builtin.uri:
+    url: "http://{{ item }}/"
+    status_code: 200
+  loop: "{{ nginx_pods }}"
+
+# --- 4. Port forwarding ---------------------------------------------------------
+
+- name: Port-forward to nginx and request the page
+  ansible.builtin.shell:
+    cmd: |
+      {{ kubectl_remote }} -n {{ smoke_namespace }} port-forward deployment/nginx 8080:80 >/tmp/port-forward.log 2>&1 &
+      PF_PID=$!
+      for i in $(seq 1 20); do
+        if curl --silent --head http://127.0.0.1:8080; then break; fi
+        sleep 1
+      done
+      kill $PF_PID
+    executable: /bin/bash
+  register: port_forward
+  changed_when: false
+
+- name: Assert port-forward returned HTTP 200
+  ansible.builtin.assert:
+    that: port_forward.stdout is search('HTTP/1.1 200 OK')
+    success_msg: "Port forwarding works"
+
+# --- 5. Logs --------------------------------------------------------------------
+
+- name: Fetch nginx logs
+  ansible.builtin.command:
+    cmd: "{{ kubectl_remote }} -n {{ smoke_namespace }} logs {{ item }}"
+  loop: "{{ nginx_pod_names }}"
+  register: nginx_logs
+  changed_when: false
+
+- name: Assert logs contain the requests made above
+  ansible.builtin.assert:
+    that: nginx_logs.results | map(attribute='stdout') | join('\n') is search('"(GET|HEAD) / HTTP/1.1" 200')
+    success_msg: "kubectl logs works"
+
+# --- 6. Exec --------------------------------------------------------------------
+
+- name: Run a command inside the nginx container
+  ansible.builtin.command:
+    cmd: "{{ kubectl_remote }} -n {{ smoke_namespace }} exec deployment/nginx -- nginx -v"
+  register: nginx_exec
+  changed_when: false
+
+- name: Assert exec returned the nginx version
+  ansible.builtin.assert:
+    that: (nginx_exec.stdout ~ nginx_exec.stderr) is search('nginx version')
+    success_msg: "kubectl exec works: {{ (nginx_exec.stdout ~ nginx_exec.stderr) | trim }}"
+
+# --- 7. Services (NodePort through kube-proxy on every worker) ------------------
+
+- name: Expose nginx as a NodePort service
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      {{ kubectl_remote }} -n {{ smoke_namespace }} expose deployment nginx --port 80 --type NodePort
+      --dry-run=client -o yaml | {{ kubectl_remote }} apply -f -
+    executable: /bin/bash
+  changed_when: false
+
+- name: Get the allocated node port
+  ansible.builtin.command:
+    cmd: >-
+      {{ kubectl_remote }} -n {{ smoke_namespace }} get svc nginx
+      -o 'jsonpath={.spec.ports[0].nodePort}'
+  register: node_port
+  changed_when: false
+
+- name: Request nginx through the node port on every worker
+  ansible.builtin.uri:
+    url: "http://{{ hostvars[item]['private_ip'] }}:{{ node_port.stdout }}/"
+    status_code: 200
+  loop: "{{ groups['workers'] }}"
+  register: nodeport_check
+  until: nodeport_check.status == 200
+  retries: 10
+  delay: 3
+
+# --- 8. Cluster DNS -------------------------------------------------------------
+
+- name: Remove previous DNS test pod
+  ansible.builtin.command:
+    cmd: "{{ kubectl_remote }} -n {{ smoke_namespace }} delete pod dns-test --ignore-not-found --wait=true"
+  changed_when: false
+
+- name: Resolve the kubernetes service from inside a pod
+  ansible.builtin.command:
+    cmd: >-
+      {{ kubectl_remote }} -n {{ smoke_namespace }} run dns-test --image={{ smoke_busybox_image }}
+      --restart=Never --command -- nslookup kubernetes.default.svc.{{ cluster_domain }}
+  changed_when: false
+
+- name: Wait for the DNS test pod to complete
+  ansible.builtin.command:
+    cmd: >-
+      {{ kubectl_remote }} -n {{ smoke_namespace }} wait pod/dns-test
+      --for=jsonpath={.status.phase}=Succeeded --timeout=120s
+  changed_when: false
+
+- name: Read DNS test output
+  ansible.builtin.command:
+    cmd: "{{ kubectl_remote }} -n {{ smoke_namespace }} logs dns-test"
+  register: dns_test
+  changed_when: false
+
+- name: Assert the kubernetes service resolved to its ClusterIP
+  ansible.builtin.assert:
+    # anchored at end of line, so the DNS server 10.32.0.10 does not match 10.32.0.1
+    that: >-
+      dns_test.stdout is search('Address: ' ~ (kubernetes_service_ip | regex_escape) ~ '$', multiline=True)
+    success_msg: "Cluster DNS works: kubernetes.default -> {{ kubernetes_service_ip }}"
+
+# --- Summary / cleanup ----------------------------------------------------------
+
+- name: Collect final cluster state
+  ansible.builtin.command:
+    cmd: "{{ kubectl_remote }} get nodes,pods,svc -A -o wide"
+  register: cluster_state
+  changed_when: false
+
+- name: Show final cluster state
+  ansible.builtin.debug:
+    var: cluster_state.stdout_lines
+
+- name: Clean up smoke test resources
+  ansible.builtin.command:
+    cmd: >-
+      {{ kubectl_remote }} -n {{ smoke_namespace }} delete
+      deployment/nginx service/nginx pod/dns-test secret/{{ smoke_secret_name }} --ignore-not-found
+  when: smoke_cleanup | bool
+  changed_when: true

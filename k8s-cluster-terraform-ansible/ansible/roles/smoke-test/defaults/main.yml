@@ -1,0 +1,7 @@
+---
+smoke_namespace: default
+smoke_secret_name: kubernetes-the-hard-way
+smoke_nginx_image: nginx:1.27
+smoke_busybox_image: busybox:1.36
+# Set to true to delete the test resources at the end
+smoke_cleanup: false
