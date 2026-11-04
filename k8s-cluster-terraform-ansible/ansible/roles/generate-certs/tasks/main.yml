@@ -1,0 +1,97 @@
+---
+# Step 1: Provision a CA and generate TLS certificates (runs on the Ansible control machine).
+# Uses plain openssl commands that work with both OpenSSL 3 and macOS LibreSSL.
+
+# The Node authorizer requires CN=system:node:<nodeName> and O=system:nodes.
+- name: Build the list of kubelet certificates (one per worker)
+  ansible.builtin.set_fact:
+    worker_certificates: >-
+      {{ worker_certificates | default([]) + [{
+           'name': item,
+           'cn': 'system:node:' ~ item,
+           'org': 'system:nodes',
+           'usage': 'serverAuth, clientAuth',
+           'dns': [item],
+           'ips': [hostvars[item]['private_ip'], hostvars[item]['ansible_host']]
+         }] }}
+  loop: "{{ groups['workers'] }}"
+
+- name: Combine static and per-worker certificate definitions
+  ansible.builtin.set_fact:
+    certificates: "{{ static_certificates + worker_certificates }}"
+
+- name: Create PKI directory
+  ansible.builtin.file:
+    path: "{{ pki_dir }}"
+    state: directory
+    mode: "0700"
+
+- name: Render CA openssl config
+  ansible.builtin.template:
+    src: ca.conf.j2
+    dest: "{{ pki_dir }}/ca.conf"
+    mode: "0600"
+
+- name: Generate CA private key
+  ansible.builtin.command:
+    cmd: openssl genrsa -out ca.key 4096
+    chdir: "{{ pki_dir }}"
+    creates: "{{ pki_dir }}/ca.key"
+
+- name: Generate self-signed CA certificate
+  ansible.builtin.command:
+    cmd: openssl req -x509 -new -sha256 -days {{ ca_days }} -key ca.key -config ca.conf -out ca.crt
+    chdir: "{{ pki_dir }}"
+    creates: "{{ pki_dir }}/ca.crt"
+
+- name: Render openssl config for every certificate
+  ansible.builtin.template:
+    src: cert.conf.j2
+    dest: "{{ pki_dir }}/{{ item.name }}.conf"
+    mode: "0600"
+  loop: "{{ certificates }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: cert_confs
+
+# If a config changed (e.g. new public IP after re-provisioning) the cert must be re-issued.
+- name: Remove certificates whose config changed
+  ansible.builtin.file:
+    path: "{{ pki_dir }}/{{ item.item.name }}.crt"
+    state: absent
+  loop: "{{ cert_confs.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when: item.changed  # noqa: no-handler - must run before the signing task below
+
+- name: Generate private keys
+  ansible.builtin.command:
+    cmd: openssl genrsa -out {{ item.name }}.key {{ key_size }}
+    chdir: "{{ pki_dir }}"
+    creates: "{{ pki_dir }}/{{ item.name }}.key"
+  loop: "{{ certificates }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Create CSRs and sign them with the CA
+  ansible.builtin.shell:
+    cmd: >-
+      openssl req -new -sha256 -key {{ item.name }}.key -config {{ item.name }}.conf -out {{ item.name }}.csr &&
+      openssl x509 -req -sha256 -days {{ cert_days }} -in {{ item.name }}.csr
+      -CA ca.crt -CAkey ca.key -CAcreateserial
+      -extfile {{ item.name }}.conf -extensions v3_ext
+      -out {{ item.name }}.crt
+    chdir: "{{ pki_dir }}"
+    creates: "{{ pki_dir }}/{{ item.name }}.crt"
+  loop: "{{ certificates }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Verify every certificate chains to the CA
+  ansible.builtin.command:
+    cmd: openssl verify -CAfile ca.crt {{ item.name }}.crt
+    chdir: "{{ pki_dir }}"
+  loop: "{{ certificates }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: false

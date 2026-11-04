@@ -1,0 +1,49 @@
+---
+ca_days: 3650
+cert_days: 365
+key_size: 2048
+
+static_certificates:
+  - name: admin
+    cn: admin
+    org: system:masters
+    usage: clientAuth
+
+  - name: kube-controller-manager
+    cn: system:kube-controller-manager
+    org: system:kube-controller-manager
+    usage: clientAuth
+
+  - name: kube-scheduler
+    cn: system:kube-scheduler
+    org: system:kube-scheduler
+    usage: clientAuth
+
+  - name: kube-proxy
+    cn: system:kube-proxy
+    org: system:node-proxier
+    usage: clientAuth
+
+  # Used by kube-apiserver (server), as its client cert towards kubelets and etcd,
+  # and by etcd itself (server + peer).
+  - name: kube-api-server
+    cn: kubernetes
+    org: Kubernetes
+    usage: serverAuth, clientAuth
+    dns:
+      - kubernetes
+      - kubernetes.default
+      - kubernetes.default.svc
+      - kubernetes.default.svc.cluster
+      - "kubernetes.default.svc.{{ cluster_domain }}"
+      - localhost
+    dns_extra: "{{ groups['controllers'] }}"
+    ips: "{{ ['127.0.0.1', kubernetes_service_ip]
+             + groups['controllers'] | map('extract', hostvars, 'private_ip') | list
+             + groups['controllers'] | map('extract', hostvars, 'ansible_host') | list }}"
+
+  # Key pair used to sign and verify service account tokens
+  - name: service-accounts
+    cn: service-accounts
+    org: Kubernetes
+    usage: clientAuth
