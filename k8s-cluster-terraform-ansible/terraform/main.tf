@@ -25,10 +25,8 @@ provider "aws" {
 }
 
 locals {
-  # Static, predictable private IPs: controllers 10.240.0.1x, workers 10.240.0.2x
   controller_ips = [for i in range(var.controller_count) : cidrhost(var.subnet_cidr, 10 + i)]
   worker_ips     = [for i in range(var.worker_count) : cidrhost(var.subnet_cidr, 20 + i)]
-  # One /24 pod subnet per worker: 10.200.0.0/24, 10.200.1.0/24, ...
   worker_pod_cidrs = [for i in range(var.worker_count) : cidrsubnet(var.cluster_cidr, 8, i)]
 }
 
@@ -92,8 +90,6 @@ resource "aws_route_table_association" "this" {
   route_table_id = aws_route_table.this.id
 }
 
-# Pod network routes: traffic for 10.200.N.0/24 is sent to the ENI of worker-N.
-# This replaces an overlay network (Flannel/Calico) with plain VPC routing.
 resource "aws_route" "pod_cidr" {
   count = var.worker_count
 
@@ -130,7 +126,7 @@ resource "aws_security_group" "cluster" {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = [var.admin_cidr]
+    cidr_blocks = var.admin_cidrs
   }
 
   ingress {
@@ -138,7 +134,7 @@ resource "aws_security_group" "cluster" {
     from_port   = 6443
     to_port     = 6443
     protocol    = "tcp"
-    cidr_blocks = [var.admin_cidr]
+    cidr_blocks = var.admin_cidrs
   }
 
   ingress {
@@ -146,7 +142,7 @@ resource "aws_security_group" "cluster" {
     from_port   = -1
     to_port     = -1
     protocol    = "icmp"
-    cidr_blocks = [var.admin_cidr]
+    cidr_blocks = var.admin_cidrs
   }
 
   ingress {
@@ -154,7 +150,7 @@ resource "aws_security_group" "cluster" {
     from_port   = 30000
     to_port     = 32767
     protocol    = "tcp"
-    cidr_blocks = [var.admin_cidr]
+    cidr_blocks = var.admin_cidrs
   }
 
   egress {
@@ -195,8 +191,6 @@ resource "aws_instance" "controller" {
   }
 }
 
-# Elastic IPs keep the controllers' public address stable, because that address
-# is baked into the API server certificate and the remote admin kubeconfig.
 resource "aws_eip" "controller" {
   count = var.controller_count
 
@@ -218,7 +212,6 @@ resource "aws_instance" "worker" {
   key_name               = aws_key_pair.this.key_name
   vpc_security_group_ids = [aws_security_group.cluster.id]
 
-  # Workers forward packets for pod IPs that are not their own address.
   source_dest_check = false
 
   root_block_device {
