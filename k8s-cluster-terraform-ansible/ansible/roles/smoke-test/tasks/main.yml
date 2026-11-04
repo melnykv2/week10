@@ -1,7 +1,4 @@
 ---
-# Step 10: Smoke test - encryption at rest, deployments, DNS, port-forward, logs,
-# exec, services and cross-node pod networking. Runs on the first controller.
-
 # --- 1. Data encryption at rest -------------------------------------------------
 
 - name: Create a generic secret
@@ -182,7 +179,6 @@
 
 - name: Assert the kubernetes service resolved to its ClusterIP
   ansible.builtin.assert:
-    # anchored at end of line, so the DNS server 10.32.0.10 does not match 10.32.0.1
     that: >-
       dns_test.stdout is search('Address: ' ~ (kubernetes_service_ip | regex_escape) ~ '$', multiline=True)
     success_msg: "Cluster DNS works: kubernetes.default -> {{ kubernetes_service_ip }}"
