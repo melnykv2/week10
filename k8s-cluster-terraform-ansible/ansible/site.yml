@@ -1,0 +1,82 @@
+---
+- name: Step 1-3 - Generate PKI, kubeconfigs and encryption config locally
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - generate-certs
+    - generate-configs
+  tags: [certs, configs]
+
+- name: Prepare all nodes (hostname, /etc/hosts)
+  hosts: k8s
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Wait for SSH to come up on fresh instances
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+
+    - name: Stop cloud-init from resetting the hostname on reboot
+      ansible.builtin.copy:
+        dest: /etc/cloud/cloud.cfg.d/99-preserve-hostname.cfg
+        content: "preserve_hostname: true\n"
+        mode: "0644"
+
+    - name: Set hostname to the inventory name (must match the node certificate CN)
+      ansible.builtin.hostname:
+        name: "{{ inventory_hostname }}"
+
+    - name: Make every node resolvable by name on every other node
+      ansible.builtin.blockinfile:
+        path: /etc/hosts
+        marker: "# {mark} kubernetes cluster nodes"
+        block: |
+          {% for host in groups['k8s'] %}
+          {{ hostvars[host]['private_ip'] }} {{ host }}
+          {% endfor %}
+  tags: [prepare]
+
+- name: Step 4-5 - Bootstrap etcd and the Kubernetes control plane
+  hosts: controllers
+  become: true
+  roles:
+    - bootstrap-etcd
+    - setup-control-plane
+  tags: [etcd, control-plane]
+
+- name: Step 6 - Bootstrap the Kubernetes worker nodes
+  hosts: workers
+  become: true
+  roles:
+    - setup-worker-nodes
+  tags: [workers]
+
+- name: Step 7 - Configure kubectl for remote access
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - configure-kubectl
+  tags: [kubectl]
+
+- name: Step 8 - Set up pod networking routes
+  hosts: workers
+  become: true
+  roles:
+    - setup-networking
+  tags: [networking]
+
+- name: Step 9 - Deploy the DNS cluster add-on
+  hosts: controllers[0]
+  become: true
+  roles:
+    - deploy-dns
+  tags: [dns]
+
+- name: Step 10 - Smoke test
+  hosts: controllers[0]
+  become: true
+  roles:
+    - smoke-test
+  tags: [smoke-test]
