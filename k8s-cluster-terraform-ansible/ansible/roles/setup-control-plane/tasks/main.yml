@@ -1,7 +1,4 @@
 ---
-# Step 5: Bootstrap the Kubernetes control plane
-# (kube-apiserver, kube-controller-manager, kube-scheduler as systemd services).
-
 - name: Create Kubernetes config directories
   ansible.builtin.file:
     path: "{{ item }}"
