@@ -33,15 +33,7 @@ You can run a single step again with tags, for example `ansible-playbook site.ym
 
 ## Admin access
 
-SSH (22), the Kubernetes API (6443), NodePorts (30000–32767) and ping are **open to everyone** (`admin_cidrs = ["0.0.0.0/0"]` by default). Admins' home IPs change from time to time, and an IP allow-list would lock them out after every change until someone ran `terraform apply` again.
-
-Being open to the internet is acceptable here because no port allows anonymous access:
-
-* **SSH:** key-only login. Ubuntu cloud images disable password authentication, and only the key pair from `ssh_public_key_path` is installed.
-* **Kubernetes API:** every request must present a client certificate signed by the cluster CA, and access is then checked by RBAC. Without one, only harmless endpoints such as `/healthz` and `/version` answer.
-* **etcd (2379/2380), kubelet (10250) and the other components** are reachable only inside the VPC.
-
-The trade-off is that security now rests entirely on the SSH private key and the kubeconfig client certificates. Keep `admin-remote.kubeconfig` (which holds `system:masters` credentials) and the SSH key private, and expect bots to probe port 22 constantly.
+SSH (22), the Kubernetes API (6443), NodePorts (30000–32767) and ping are **open to everyone** (`admin_cidrs = ["0.0.0.0/0"]` by default). 
 
 To restrict access later (for example, to an office network or a VPN exit IP), copy `terraform/terraform.tfvars.example` to `terraform.tfvars`, list the networks in `admin_cidrs`, and run `terraform apply`. Only the security group changes; the instances are not touched.
 
@@ -171,7 +163,6 @@ Items 1–8 are the known failure points of a hand-built cluster, which I handle
    * The DNS check needed an anchored regex (`Address: 10.32.0.1$`). Otherwise the DNS server address `10.32.0.10` also matches.
    * Building the per-worker cert list as a JSON string in `vars` depends on Ansible's string-to-list conversion, which differs between versions. I replaced it with a `set_fact` loop.
    * `ansible-lint` flagged shell pipes without `pipefail` and extra collection modules (`community.general.modprobe`, `ansible.posix.sysctl`). I added `set -o pipefail` and switched to `modules-load.d`/`sysctl.d` files with `ansible.builtin`. The roles now pass the `production` profile with no extra collections.
-10. **The nginx website could not be reached from the internet.** The NodePort check passed inside the smoke test, but `http://<worker-public-ip>:31408` timed out from a browser. The smoke test runs on the controller and reaches the NodePort over the private network, which the security group allows. The security group didn't open the NodePort range to the outside. The fix was a security group rule for TCP 30000–32767 from `admin_cidrs`. The website must be opened on a **worker's** public IP, because the controller doesn't run kube-proxy and has no NodePorts.
 
 ## Verification done
 
@@ -213,20 +204,3 @@ NAME         TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)        AGE
 kubernetes   ClusterIP   10.32.0.1    <none>        443/TCP        5m11s
 nginx        NodePort    10.32.0.28   <none>        80:31408/TCP   79s
 ```
-
-**Website access.** After the NodePort security group rule was added, the nginx test page loads from the internet on either worker's public IP. kube-proxy on each worker forwards the request to an nginx pod, which may be on the other node:
-
-| URL | Node |
-|---|---|
-| http://3.232.107.94:31408 | worker-0 |
-| http://44.222.150.32:31408 | worker-1 |
-
-The worker IPs are regular EC2 public IPs and change if the instances are stopped and started; `terraform output worker_public_ips` shows the current ones. The controller's Elastic IP (`18.209.144.185`) serves only the Kubernetes API on 6443, with no NodePorts.
-
-<!-- TODO: add the ansible-playbook PLAY RECAP (failed=0) and the smoke-test assert messages -->
-
-## Possible improvements
-
-* 3 controllers behind an AWS NLB for an HA control plane. The etcd and apiserver templates already loop over the `controllers` group, so only the API endpoint variables and the NLB would need to change.
-* Check downloads with SHA-256 checksums, and replace `creates:` with version-aware upgrades.
-* Calico or Cilium in place of static routes, for NetworkPolicy support.
