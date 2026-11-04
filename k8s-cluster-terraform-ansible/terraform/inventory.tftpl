@@ -1,0 +1,18 @@
+[controllers]
+%{ for c in controllers ~}
+${c.name} ansible_host=${c.public_ip} private_ip=${c.private_ip}
+%{ endfor ~}
+
+[workers]
+%{ for w in workers ~}
+${w.name} ansible_host=${w.public_ip} private_ip=${w.private_ip} pod_cidr=${w.pod_cidr}
+%{ endfor ~}
+
+[k8s:children]
+controllers
+workers
+
+[k8s:vars]
+ansible_user=ubuntu
+ansible_ssh_private_key_file=${ssh_private_key}
+cluster_cidr=${cluster_cidr}
