@@ -1,5 +1,5 @@
 ---
-- name: Step 1-3 - Generate PKI, kubeconfigs and encryption config locally
+- name: Generate PKI, kubeconfigs and encryption config locally
   hosts: localhost
   connection: local
   gather_facts: false
@@ -37,7 +37,7 @@
           {% endfor %}
   tags: [prepare]
 
-- name: Step 4-5 - Bootstrap etcd and the Kubernetes control plane
+- name: Bootstrap etcd and the Kubernetes control plane
   hosts: controllers
   become: true
   roles:
@@ -45,14 +45,14 @@
     - setup-control-plane
   tags: [etcd, control-plane]
 
-- name: Step 6 - Bootstrap the Kubernetes worker nodes
+- name: Bootstrap the Kubernetes worker nodes
   hosts: workers
   become: true
   roles:
     - setup-worker-nodes
   tags: [workers]
 
-- name: Step 7 - Configure kubectl for remote access
+- name: Configure kubectl for remote access
   hosts: localhost
   connection: local
   gather_facts: false
@@ -60,21 +60,21 @@
     - configure-kubectl
   tags: [kubectl]
 
-- name: Step 8 - Set up pod networking routes
+- name: Set up pod networking routes
   hosts: workers
   become: true
   roles:
     - setup-networking
   tags: [networking]
 
-- name: Step 9 - Deploy the DNS cluster add-on
+- name: Deploy the DNS cluster add-on
   hosts: controllers[0]
   become: true
   roles:
     - deploy-dns
   tags: [dns]
 
-- name: Step 10 - Smoke test
+- name: Smoke test
   hosts: controllers[0]
   become: true
   roles:
