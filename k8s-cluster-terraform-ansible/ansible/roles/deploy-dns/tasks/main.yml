@@ -1,6 +1,4 @@
 ---
-# Step 9: Deploy the DNS cluster add-on (CoreDNS behind the kube-dns service, cluster_dns_ip).
-
 - name: Render CoreDNS manifest
   ansible.builtin.template:
     src: coredns.yaml.j2
