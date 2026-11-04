@@ -24,8 +24,6 @@ static_certificates:
     org: system:node-proxier
     usage: clientAuth
 
-  # Used by kube-apiserver (server), as its client cert towards kubelets and etcd,
-  # and by etcd itself (server + peer).
   - name: kube-api-server
     cn: kubernetes
     org: Kubernetes
@@ -42,7 +40,6 @@ static_certificates:
              + groups['controllers'] | map('extract', hostvars, 'private_ip') | list
              + groups['controllers'] | map('extract', hostvars, 'ansible_host') | list }}"
 
-  # Key pair used to sign and verify service account tokens
   - name: service-accounts
     cn: service-accounts
     org: Kubernetes

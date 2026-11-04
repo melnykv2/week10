@@ -1,8 +1,4 @@
 ---
-# Step 1: Provision a CA and generate TLS certificates (runs on the Ansible control machine).
-# Uses plain openssl commands that work with both OpenSSL 3 and macOS LibreSSL.
-
-# The Node authorizer requires CN=system:node:<nodeName> and O=system:nodes.
 - name: Build the list of kubelet certificates (one per worker)
   ansible.builtin.set_fact:
     worker_certificates: >-
