@@ -1,0 +1,234 @@
+---
+# Step 6: Bootstrap the worker nodes (containerd + runc, CNI plugins, kubelet, kube-proxy).
+
+- name: Install OS dependencies
+  ansible.builtin.apt:
+    name: [socat, conntrack, ipset, iptables, kmod]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Disable swap now (kubelet refuses to start with swap on)
+  ansible.builtin.command: swapoff -a
+  when: ansible_facts['swaptotal_mb'] | int > 0
+  changed_when: true
+
+- name: Disable swap permanently
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^([^#].*\sswap\s.*)$'
+    replace: '# \1'
+
+- name: Load kernel modules required by containerd and kube-proxy on boot
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/kubernetes.conf
+    content: |
+      overlay
+      br_netfilter
+    mode: "0644"
+
+- name: Load kernel modules now
+  ansible.builtin.command: modprobe {{ item }}
+  loop: [overlay, br_netfilter]
+  changed_when: false
+
+- name: Enable IP forwarding and bridged traffic filtering
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/99-kubernetes.conf
+    content: |
+      net.ipv4.ip_forward = 1
+      net.bridge.bridge-nf-call-iptables = 1
+      net.bridge.bridge-nf-call-ip6tables = 1
+    mode: "0644"
+  register: k8s_sysctl
+
+- name: Apply sysctl settings
+  ansible.builtin.command: sysctl --system
+  when: k8s_sysctl.changed  # noqa: no-handler - must apply before kubelet starts below
+  changed_when: true
+
+- name: Create worker directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /etc/cni/net.d
+    - /opt/cni/bin
+    - /etc/containerd
+    - /var/lib/kubelet
+    - /var/lib/kube-proxy
+    - /var/lib/kubernetes
+    - /var/run/kubernetes
+
+# --- Binaries -----------------------------------------------------------------
+
+- name: Download kubelet, kube-proxy and kubectl
+  ansible.builtin.get_url:
+    url: "https://dl.k8s.io/{{ kubernetes_version }}/bin/linux/{{ arch }}/{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
+    mode: "0755"
+  loop:
+    - kubelet
+    - kube-proxy
+    - kubectl
+  notify:
+    - Restart kubelet
+    - Restart kube-proxy
+
+- name: Download runc
+  ansible.builtin.get_url:
+    url: "https://github.com/opencontainers/runc/releases/download/{{ runc_version }}/runc.{{ arch }}"
+    dest: /usr/local/sbin/runc
+    mode: "0755"
+
+- name: Download containerd, CNI plugins and crictl archives
+  ansible.builtin.get_url:
+    url: "{{ item.url }}"
+    dest: "/tmp/{{ item.name }}"
+    mode: "0644"
+  loop:
+    - name: "containerd-{{ containerd_version }}.tar.gz"
+      url: "{{ gh }}/containerd/containerd/releases/download/v{{ containerd_version }}/containerd-{{ containerd_version }}-linux-{{ arch }}.tar.gz"
+    - name: "cni-plugins-{{ cni_plugins_version }}.tgz"
+      url: "{{ gh }}/containernetworking/plugins/releases/download/{{ cni_plugins_version }}/cni-plugins-linux-{{ arch }}-{{ cni_plugins_version }}.tgz"
+    - name: "crictl-{{ crictl_version }}.tar.gz"
+      url: "{{ gh }}/kubernetes-sigs/cri-tools/releases/download/{{ crictl_version }}/crictl-{{ crictl_version }}-linux-{{ arch }}.tar.gz"
+  loop_control:
+    label: "{{ item.name }}"
+  vars:
+    gh: https://github.com
+
+- name: Extract containerd (bin/* -> /usr/local/bin)
+  ansible.builtin.command:  # noqa: command-instead-of-module - plain tar + creates is simpler than unarchive here
+    cmd: tar -xzf /tmp/containerd-{{ containerd_version }}.tar.gz -C /usr/local
+    creates: /usr/local/bin/containerd
+  notify: Restart containerd
+
+- name: Extract CNI plugins
+  ansible.builtin.unarchive:
+    src: /tmp/cni-plugins-{{ cni_plugins_version }}.tgz
+    dest: /opt/cni/bin
+    remote_src: true
+    creates: /opt/cni/bin/bridge
+
+- name: Extract crictl
+  ansible.builtin.unarchive:
+    src: /tmp/crictl-{{ crictl_version }}.tar.gz
+    dest: /usr/local/bin
+    remote_src: true
+    creates: /usr/local/bin/crictl
+
+- name: Point crictl at containerd
+  ansible.builtin.copy:
+    dest: /etc/crictl.yaml
+    content: |
+      runtime-endpoint: unix:///var/run/containerd/containerd.sock
+      image-endpoint: unix:///var/run/containerd/containerd.sock
+    mode: "0644"
+
+# --- Configuration ------------------------------------------------------------
+
+- name: Configure CNI networking (bridge + loopback)
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/cni/net.d/{{ item }}"
+    mode: "0644"
+  loop:
+    - 10-bridge.conf
+    - 99-loopback.conf
+  notify: Restart kubelet
+
+- name: Configure containerd
+  ansible.builtin.template:
+    src: containerd-config.toml.j2
+    dest: /etc/containerd/config.toml
+    mode: "0644"
+  notify: Restart containerd
+
+- name: Copy kubelet certificates and CA
+  ansible.builtin.copy:
+    src: "{{ pki_dir }}/{{ item.src }}"
+    dest: "/var/lib/kubelet/{{ item.dest }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - {src: ca.crt, dest: ca.crt, mode: "0644"}
+    - {src: "{{ inventory_hostname }}.crt", dest: kubelet.crt, mode: "0644"}
+    - {src: "{{ inventory_hostname }}.key", dest: kubelet.key, mode: "0600"}
+  loop_control:
+    label: "{{ item.dest }}"
+  notify: Restart kubelet
+
+- name: Copy CA for other node components
+  ansible.builtin.copy:
+    src: "{{ pki_dir }}/ca.crt"
+    dest: /var/lib/kubernetes/ca.crt
+    mode: "0644"
+
+- name: Copy kubelet kubeconfig
+  ansible.builtin.copy:
+    src: "{{ kubeconfig_dir }}/{{ inventory_hostname }}.kubeconfig"
+    dest: /var/lib/kubelet/kubeconfig
+    mode: "0600"
+  notify: Restart kubelet
+
+- name: Copy kube-proxy kubeconfig
+  ansible.builtin.copy:
+    src: "{{ kubeconfig_dir }}/kube-proxy.kubeconfig"
+    dest: /var/lib/kube-proxy/kubeconfig
+    mode: "0600"
+  notify: Restart kube-proxy
+
+- name: Configure kubelet
+  ansible.builtin.template:
+    src: kubelet-config.yaml.j2
+    dest: /var/lib/kubelet/kubelet-config.yaml
+    mode: "0644"
+  notify: Restart kubelet
+
+- name: Configure kube-proxy
+  ansible.builtin.template:
+    src: kube-proxy-config.yaml.j2
+    dest: /var/lib/kube-proxy/kube-proxy-config.yaml
+    mode: "0644"
+  notify: Restart kube-proxy
+
+- name: Install systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.service.j2"
+    dest: "/etc/systemd/system/{{ item }}.service"
+    mode: "0644"
+  loop:
+    - containerd
+    - kubelet
+    - kube-proxy
+  notify:
+    - Restart containerd
+    - Restart kubelet
+    - Restart kube-proxy
+
+- name: Start and enable worker services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+    daemon_reload: true
+  loop:
+    - containerd
+    - kubelet
+    - kube-proxy
+
+- name: Apply pending worker restarts
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait until the node is registered and Ready
+  ansible.builtin.command:
+    cmd: >-
+      {{ kubectl_remote }} get node {{ inventory_hostname }}
+      -o 'jsonpath={.status.conditions[?(@.type=="Ready")].status}'
+  delegate_to: "{{ groups['controllers'][0] }}"
+  register: node_ready
+  until: node_ready.stdout == 'True'
+  retries: 30
+  delay: 5
+  changed_when: false
