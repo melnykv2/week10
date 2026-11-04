@@ -1,91 +1,19 @@
-# Kubernetes the Hard Way on AWS — Terraform + Ansible
-
-This project builds a Kubernetes cluster **from scratch**, without kubeadm or a managed service. Every certificate, kubeconfig and systemd unit is generated and installed by Ansible.
-
-* **Terraform** creates the AWS infrastructure: a VPC, one subnet, a security group, EC2 instances, pod network routes and an Elastic IP. It also writes the Ansible inventory.
-* **Ansible** runs the 10 bootstrap steps from *Kubernetes the Hard Way*.
-
-| Component | Version |
-|---|---|
-| Kubernetes (apiserver, controller-manager, scheduler, kubelet, kube-proxy, kubectl) | v1.34.13 |
-| etcd | v3.6.8 |
-| containerd / runc | 2.1.6 / v1.3.4 |
-| CNI plugins / crictl | v1.8.0 / v1.34.0 |
-| CoreDNS | v1.12.1 |
-| OS | Ubuntu 24.04 LTS (Noble) |
-
-All versions are variables in `ansible/group_vars/all.yml`.
-
-## Architecture
-
-```
-                       Internet
-                          │  22, 6443, 30000-32767 (admin_cidr)
-            ┌─────────────┴──────────────────────────────────────────┐
-            │ VPC 10.240.0.0/16  ─ subnet 10.240.0.0/24              │
-            │                                                        │
-            │  controller-0  10.240.0.10  (Elastic IP)               │
-            │    etcd · kube-apiserver · controller-manager · sched  │
-            │                                                        │
-            │  worker-0  10.240.0.20   pods 10.200.0.0/24            │
-            │  worker-1  10.240.0.21   pods 10.200.1.0/24            │
-            │    containerd · kubelet · kube-proxy · CNI bridge      │
-            │                                                        │
-            │  Route table: 10.200.N.0/24 → ENI of worker-N          │
-            └────────────────────────────────────────────────────────┘
-  Service CIDR 10.32.0.0/24  ·  kubernetes svc 10.32.0.1  ·  DNS 10.32.0.10
-```
-
-## Project structure
-
-```
-k8s-cluster-terraform-ansible/
-├── terraform/
-│   ├── main.tf            # VPC, SG, EC2, EIP, pod routes, inventory generation
-│   ├── variables.tf
-│   ├── outputs.tf
-│   └── inventory.tftpl    # template for ansible/inventory.ini
-├── ansible/
-│   ├── ansible.cfg
-│   ├── site.yml           # runs the 10 steps in order (each play is tagged)
-│   ├── group_vars/all.yml # versions, CIDRs, paths
-│   └── roles/
-│       ├── generate-certs/       # Step 1  CA + TLS certificates
-│       ├── generate-configs/     # Step 2+3 kubeconfigs + encryption config
-│       ├── bootstrap-etcd/       # Step 4
-│       ├── setup-control-plane/  # Step 5
-│       ├── setup-worker-nodes/   # Step 6
-│       ├── configure-kubectl/    # Step 7
-│       ├── setup-networking/     # Step 8
-│       ├── deploy-dns/           # Step 9  (CoreDNS)
-│       └── smoke-test/           # Step 10
-└── README.md
-```
-
-I added one role, `deploy-dns`, to the suggested layout so that each of the 10 steps in the assignment has its own role. Generated files (`ansible/artifacts/`, `ansible/inventory.ini`) are git-ignored because they contain private keys.
-
-## Prerequisites (on your machine)
-
-* Terraform ≥ 1.5 and AWS credentials (`aws sts get-caller-identity` works)
-* Ansible core ≥ 2.15. Only `ansible.builtin` modules are used, so no extra collections are needed.
-* `openssl`. Both macOS LibreSSL and OpenSSL 3 work.
-* An SSH key pair. The default is `~/.ssh/id_ed25519`.
-* `kubectl` (optional). It's used to verify remote access in Step 7.
+# Week 10 TASK
 
 ## How to run
 
 ```bash
-# 1. Infrastructure (~2 min). Restricting admin_cidr to your IP is strongly recommended.
+# 1. Infrastructure (~2 min). Ports are open to everyone; see "Admin access" to restrict them.
 cd terraform
 terraform init
-terraform apply -var "admin_cidr=$(curl -s https://checkip.amazonaws.com)/32"
+terraform apply
 
 # 2. Cluster bootstrap (~6-8 min)
 cd ../ansible
 ansible-playbook site.yml
 
 # 3. Use the cluster from your laptop
-export KUBECONFIG=$PWD/artifacts/admin-remote.kubeconfig
+export KUBECONFIG=~/week10/k8s-cluster-terraform-ansible/artifacts/admin-remote.kubeconfig
 kubectl get nodes -o wide
 
 # 4. Open the nginx test website (NodePort service created by the smoke test)
@@ -103,6 +31,20 @@ You can run a single step again with tags, for example `ansible-playbook site.ym
 
 ---
 
+## Admin access
+
+SSH (22), the Kubernetes API (6443), NodePorts (30000–32767) and ping are **open to everyone** (`admin_cidrs = ["0.0.0.0/0"]` by default). Admins' home IPs change from time to time, and an IP allow-list would lock them out after every change until someone ran `terraform apply` again.
+
+Being open to the internet is acceptable here because no port allows anonymous access:
+
+* **SSH:** key-only login. Ubuntu cloud images disable password authentication, and only the key pair from `ssh_public_key_path` is installed.
+* **Kubernetes API:** every request must present a client certificate signed by the cluster CA, and access is then checked by RBAC. Without one, only harmless endpoints such as `/healthz` and `/version` answer.
+* **etcd (2379/2380), kubelet (10250) and the other components** are reachable only inside the VPC.
+
+The trade-off is that security now rests entirely on the SSH private key and the kubeconfig client certificates. Keep `admin-remote.kubeconfig` (which holds `system:masters` credentials) and the SSH key private, and expect bots to probe port 22 constantly.
+
+To restrict access later (for example, to an office network or a VPN exit IP), copy `terraform/terraform.tfvars.example` to `terraform.tfvars`, list the networks in `admin_cidrs`, and run `terraform apply`. Only the security group changes; the instances are not touched.
+
 ## Step-by-step
 
 ### Infrastructure (Terraform)
@@ -110,7 +52,7 @@ You can run a single step again with tags, for example `ansible-playbook site.ym
 * **Static private IPs** (`10.240.0.1x` for controllers, `10.240.0.2x` for workers), so certificate SANs and configs are predictable.
 * An **Elastic IP** on the controller. Its public address goes into the API server certificate and the remote kubeconfig, so it must not change when the instance stops and starts.
 * `source_dest_check = false` on the workers, and **one VPC route per worker** (`10.200.N.0/24 → worker-N ENI`). This is the pod network, with no overlay.
-* A security group that allows all traffic inside the VPC and the pod CIDR, and SSH (22), the Kubernetes API (6443), NodePort services (30000–32767) and ICMP only from `admin_cidr`.
+* A security group that allows all traffic inside the VPC and the pod CIDR, and SSH (22), the Kubernetes API (6443), NodePort services (30000–32767) and ICMP from `admin_cidrs` (everyone by default).
 * `local_file` renders `ansible/inventory.ini`. Each host gets `ansible_host`, `private_ip` and (for workers) `pod_cidr`.
 
 A pre-play in `site.yml` runs before the 10 steps. It sets each node's hostname to its inventory name (`controller-0`, `worker-0`, …), turns on cloud-init's `preserve_hostname` and writes `/etc/hosts` entries for every node. The hostname must match the node certificate's CN.
@@ -229,7 +171,7 @@ Items 1–8 are the known failure points of a hand-built cluster, which I handle
    * The DNS check needed an anchored regex (`Address: 10.32.0.1$`). Otherwise the DNS server address `10.32.0.10` also matches.
    * Building the per-worker cert list as a JSON string in `vars` depends on Ansible's string-to-list conversion, which differs between versions. I replaced it with a `set_fact` loop.
    * `ansible-lint` flagged shell pipes without `pipefail` and extra collection modules (`community.general.modprobe`, `ansible.posix.sysctl`). I added `set -o pipefail` and switched to `modules-load.d`/`sysctl.d` files with `ansible.builtin`. The roles now pass the `production` profile with no extra collections.
-10. **The nginx website could not be reached from the internet.** The NodePort check passed inside the smoke test, but `http://<worker-public-ip>:31408` timed out from a browser. The smoke test runs on the controller and reaches the NodePort over the private network, which the security group allows. The security group didn't open the NodePort range to the outside. The fix was a security group rule for TCP 30000–32767 from `admin_cidr`. The website must be opened on a **worker's** public IP, because the controller doesn't run kube-proxy and has no NodePorts.
+10. **The nginx website could not be reached from the internet.** The NodePort check passed inside the smoke test, but `http://<worker-public-ip>:31408` timed out from a browser. The smoke test runs on the controller and reaches the NodePort over the private network, which the security group allows. The security group didn't open the NodePort range to the outside. The fix was a security group rule for TCP 30000–32767 from `admin_cidrs`. The website must be opened on a **worker's** public IP, because the controller doesn't run kube-proxy and has no NodePorts.
 
 ## Verification done
 
