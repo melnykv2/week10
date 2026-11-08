@@ -1,0 +1,11 @@
+server:
+  persistentVolume:
+    enabled: false
+  retention: 2d
+
+alertmanager:
+  persistence:
+    enabled: false
+
+prometheus-pushgateway:
+  enabled: false
