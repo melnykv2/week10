@@ -3,6 +3,12 @@ ca_days: 3650
 cert_days: 365
 key_size: 2048
 
+# front-proxy-ca signs only the aggregation layer's client cert, so a regular cluster
+# client cert can never be used to impersonate users through an extension API server.
+certificate_authorities:
+  - {name: ca, cn: Kubernetes CA}
+  - {name: front-proxy-ca, cn: Kubernetes Front Proxy CA}
+
 static_certificates:
   - name: admin
     cn: admin
@@ -44,3 +50,10 @@ static_certificates:
     cn: service-accounts
     org: Kubernetes
     usage: clientAuth
+
+  # Client cert kube-apiserver presents to aggregated API servers (metrics-server)
+  - name: front-proxy-client
+    cn: front-proxy-client
+    org: Kubernetes
+    usage: clientAuth
+    ca: front-proxy-ca

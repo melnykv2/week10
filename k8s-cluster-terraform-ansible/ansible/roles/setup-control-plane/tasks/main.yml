@@ -35,6 +35,9 @@
     - "{{ pki_dir }}/kube-api-server.key"
     - "{{ pki_dir }}/service-accounts.crt"
     - "{{ pki_dir }}/service-accounts.key"
+    - "{{ pki_dir }}/front-proxy-ca.crt"
+    - "{{ pki_dir }}/front-proxy-client.crt"
+    - "{{ pki_dir }}/front-proxy-client.key"
     - "{{ artifacts_dir }}/encryption-config.yaml"
   notify:
     - Restart kube-apiserver

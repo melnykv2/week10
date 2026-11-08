@@ -22,23 +22,32 @@
     state: directory
     mode: "0700"
 
-- name: Render CA openssl config
+- name: Render CA openssl configs
   ansible.builtin.template:
     src: ca.conf.j2
-    dest: "{{ pki_dir }}/ca.conf"
+    dest: "{{ pki_dir }}/{{ item.name }}.conf"
     mode: "0600"
+  loop: "{{ certificate_authorities }}"
+  loop_control:
+    label: "{{ item.name }}"
 
-- name: Generate CA private key
+- name: Generate CA private keys
   ansible.builtin.command:
-    cmd: openssl genrsa -out ca.key 4096
+    cmd: openssl genrsa -out {{ item.name }}.key 4096
     chdir: "{{ pki_dir }}"
-    creates: "{{ pki_dir }}/ca.key"
+    creates: "{{ pki_dir }}/{{ item.name }}.key"
+  loop: "{{ certificate_authorities }}"
+  loop_control:
+    label: "{{ item.name }}"
 
-- name: Generate self-signed CA certificate
+- name: Generate self-signed CA certificates
   ansible.builtin.command:
-    cmd: openssl req -x509 -new -sha256 -days {{ ca_days }} -key ca.key -config ca.conf -out ca.crt
+    cmd: openssl req -x509 -new -sha256 -days {{ ca_days }} -key {{ item.name }}.key -config {{ item.name }}.conf -out {{ item.name }}.crt
     chdir: "{{ pki_dir }}"
-    creates: "{{ pki_dir }}/ca.crt"
+    creates: "{{ pki_dir }}/{{ item.name }}.crt"
+  loop: "{{ certificate_authorities }}"
+  loop_control:
+    label: "{{ item.name }}"
 
 - name: Render openssl config for every certificate
   ansible.builtin.template:
@@ -68,12 +77,12 @@
   loop_control:
     label: "{{ item.name }}"
 
-- name: Create CSRs and sign them with the CA
+- name: Create CSRs and sign them with their CA
   ansible.builtin.shell:
     cmd: >-
       openssl req -new -sha256 -key {{ item.name }}.key -config {{ item.name }}.conf -out {{ item.name }}.csr &&
       openssl x509 -req -sha256 -days {{ cert_days }} -in {{ item.name }}.csr
-      -CA ca.crt -CAkey ca.key -CAcreateserial
+      -CA {{ item.ca | default('ca') }}.crt -CAkey {{ item.ca | default('ca') }}.key -CAcreateserial
       -extfile {{ item.name }}.conf -extensions v3_ext
       -out {{ item.name }}.crt
     chdir: "{{ pki_dir }}"
@@ -82,9 +91,9 @@
   loop_control:
     label: "{{ item.name }}"
 
-- name: Verify every certificate chains to the CA
+- name: Verify every certificate chains to its CA
   ansible.builtin.command:
-    cmd: openssl verify -CAfile ca.crt {{ item.name }}.crt
+    cmd: openssl verify -CAfile {{ item.ca | default('ca') }}.crt {{ item.name }}.crt
     chdir: "{{ pki_dir }}"
   loop: "{{ certificates }}"
   loop_control:
